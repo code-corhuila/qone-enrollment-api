@@ -1,0 +1,522 @@
+openapi: 3.0.3
+info:
+  title: qone-enrollment-api
+  version: 2.0.0
+  description: |
+    Enrollment domain of Qampus (ADR-006): the academic record, the pensum, the enrollments the
+    saga records, the schedule, the roster and the verifiable certificates. Operations
+    EN-01..EN-14 of `../../endpoint-catalog.md`. The service never reads another domain's
+    database: subjects, prerequisites and sections come from its **projection of catalog**
+    (D-11), fed by catalog events through the outbox. Shared components: `./_shared.yaml`.
+    Data: `06-data/models.md`, schema `enrollment`. Operations tagged `saga` accept only a
+    SERVICE token (qone-workflow, ADR-008).
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Through qone-api-gateway
+
+security:
+  - bearerAuth: []
+
+paths:
+  /enrollment/health:
+    get:
+      tags: [record]
+      summary: Liveness of the enrollment service (EN-01)
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: './_shared.yaml#/components/schemas/Health' }
+
+  /enrollment/academic-records/me:
+    get:
+      tags: [record]
+      summary: My academic record (EN-02)
+      description: STUDENT only. Created on first access from the token's `sub` and `name`; `passedCodes` is append-only (`INV-REC-001`).
+      responses:
+        '200':
+          description: The record
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AcademicRecord' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+
+  /enrollment/pensum/me:
+    get:
+      tags: [record]
+      summary: My pensum - every subject with its state for me (EN-03)
+      description: STUDENT only. States come from the record, the confirmed enrollments and the prerequisites of the catalog projection (`INV-ENR-006`).
+      responses:
+        '200':
+          description: The pensum
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pensum' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+
+  /enrollment/eligibility-checks:
+    post:
+      tags: [saga]
+      summary: Can this student enroll in this section? - saga step `check-eligibility` (EN-04)
+      description: |
+        SERVICE only. A read expressed as `POST` because it has a body; it creates nothing and
+        needs no `Idempotency-Key`. Checks, in order: active duplicate (`INV-ENR-001`), missing
+        prerequisite (`INV-ENR-006`, `PREREQ_MISSING`), schedule conflict with my confirmed
+        enrollments (`INV-ENR-003`, `SCHEDULE_CONFLICT`). The first failure is the reason.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [studentId, sectionId]
+              properties:
+                studentId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+                sectionId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+      responses:
+        '200':
+          description: The verdict (a `false` verdict is a `200`, not an error)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EligibilityResult' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_shared.yaml#/components/responses/NotFound' }
+
+  /enrollment/enrollments:
+    post:
+      tags: [saga]
+      summary: Record the outcome of an enrollment attempt - saga step `confirm-enrollment` (EN-05)
+      description: |
+        SERVICE only (D-10). `outcome: CONFIRMED` requires `reservationId` and snapshots the
+        section from the projection; `outcome: REJECTED` requires `rejectionReason` and records
+        the attempt as a fact (D-01). `origin: AGENT` requires `confirmationId` (`INV-ENR-005`).
+        A second active enrollment for the same student, subject and term is
+        `422 BUSINESS_RULE_VIOLATION` (`INV-ENR-001`). Writes `EnrollmentConfirmed` or
+        `EnrollmentRejected` to the outbox in the same transaction.
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EnrollmentRequest' }
+      responses:
+        '201':
+          description: Recorded
+          headers:
+            Location: { $ref: './_shared.yaml#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Enrollment' }
+        '200':
+          description: Same `Idempotency-Key` - the enrollment recorded the first time
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Enrollment' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_shared.yaml#/components/responses/NotFound' }
+        '422': { $ref: './_shared.yaml#/components/responses/BusinessRuleViolation' }
+
+  /enrollment/enrollments/{id}/cancel:
+    post:
+      tags: [saga]
+      summary: Cancel a confirmed enrollment - compensation of `confirm-enrollment` (EN-06)
+      description: SERVICE only. `CONFIRMED` -> `CANCELLED`; cancelling a `CANCELLED` one returns it unchanged (D-04); a `REJECTED` one is `422 INVALID_STATUS_TRANSITION` (`INV-ENR-004`).
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/Id'
+      responses:
+        '200':
+          description: The enrollment, `CANCELLED`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Enrollment' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_shared.yaml#/components/responses/NotFound' }
+        '422': { $ref: './_shared.yaml#/components/responses/InvalidTransition' }
+
+  /enrollment/enrollments/me:
+    get:
+      tags: [enrollments]
+      summary: My enrollments, newest first (EN-07)
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/Page'
+        - $ref: './_shared.yaml#/components/parameters/Limit'
+        - $ref: '#/components/parameters/TermFilter'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/EnrollmentStatus' }
+      responses:
+        '200':
+          description: A page of enrollments
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EnrollmentPage' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+
+  /enrollment/enrollments/{id}:
+    get:
+      tags: [enrollments]
+      summary: One enrollment (EN-08)
+      description: The owner, a PROFESSOR, an ADMIN or a SERVICE token; another student's enrollment is `403`.
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/Id'
+      responses:
+        '200':
+          description: The enrollment
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Enrollment' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_shared.yaml#/components/responses/NotFound' }
+
+  /enrollment/schedule/me:
+    get:
+      tags: [enrollments]
+      summary: My weekly schedule - confirmed enrollments of the term (EN-09)
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/Page'
+        - $ref: './_shared.yaml#/components/parameters/Limit'
+        - $ref: '#/components/parameters/TermFilter'
+      responses:
+        '200':
+          description: A page of schedule items
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScheduleItemPage' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+
+  /enrollment/sections/{sectionId}/roster:
+    get:
+      tags: [enrollments]
+      summary: Students confirmed in a section (EN-10)
+      description: PROFESSOR or ADMIN. The section must exist in the projection (`404`).
+      parameters:
+        - name: sectionId
+          in: path
+          required: true
+          schema: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        - $ref: './_shared.yaml#/components/parameters/Page'
+        - $ref: './_shared.yaml#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of roster items
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RosterItemPage' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_shared.yaml#/components/responses/NotFound' }
+
+  /enrollment/certificates/verify/{code}:
+    get:
+      tags: [certificates]
+      summary: Verify a certificate by its public code (EN-11)
+      description: "Public, without a token. An unknown code is `200` with `valid: false`, never `404`, so the page behaves the same for every visitor."
+      security: []
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string, pattern: '^QMP-[A-Z0-9]{8}$' }
+      responses:
+        '200':
+          description: The verdict
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Verification' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+
+  /enrollment/certificates/me:
+    get:
+      tags: [certificates]
+      summary: My certificates, newest first (EN-12)
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/Page'
+        - $ref: './_shared.yaml#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of certificates
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CertificatePage' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+
+  /enrollment/certificates:
+    post:
+      tags: [certificates]
+      summary: Issue a certificate for me (EN-13)
+      description: |
+        STUDENT only (D-12). Records the certificate with a public code and renders the PDF once.
+        Preconditions are `422 BUSINESS_RULE_VIOLATION`: `pago` and `paz-y-salvo` need the
+        current invoice `PAID` (`INV-ENR-002`, read from the billing projection); `matricula`
+        needs at least one `CONFIRMED` enrollment this term; `avance` needs a non-empty record.
+        `estudios` has no precondition.
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type: { $ref: '#/components/schemas/CertificateType' }
+      responses:
+        '201':
+          description: Certificate issued
+          headers:
+            Location: { $ref: './_shared.yaml#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Certificate' }
+        '200':
+          description: Same `Idempotency-Key` - the certificate issued the first time
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Certificate' }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_shared.yaml#/components/responses/BusinessRuleViolation' }
+
+  /enrollment/certificates/{id}/pdf:
+    get:
+      tags: [certificates]
+      summary: Download the PDF of one of my certificates (EN-14)
+      description: Owner only; another student's certificate is `404` (D-03). The response carries `X-Verification-Code` with the public code printed in the document.
+      parameters:
+        - $ref: './_shared.yaml#/components/parameters/Id'
+      responses:
+        '200':
+          description: The document
+          headers:
+            X-Verification-Code:
+              schema: { type: string, example: QMP-7F3A9C21 }
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '400': { $ref: './_shared.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared.yaml#/components/responses/Unauthorized' }
+        '404': { $ref: './_shared.yaml#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth: { $ref: './_shared.yaml#/components/securitySchemes/bearerAuth' }
+
+  parameters:
+    TermFilter:
+      name: term
+      in: query
+      schema: { $ref: './_shared.yaml#/components/schemas/Term' }
+
+  schemas:
+    AcademicRecord:
+      type: object
+      required: [studentId, studentName, program, semester, passedCodes, updatedAt]
+      properties:
+        studentId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        studentName: { type: string }
+        program: { type: string }
+        semester: { type: integer, minimum: 1 }
+        passedCodes:
+          type: array
+          description: Subject codes passed; append-only (INV-REC-001)
+          items: { type: string, pattern: '^[A-Z0-9-]{3,10}$' }
+        updatedAt: { $ref: './_shared.yaml#/components/schemas/DateTime' }
+
+    PensumSubject:
+      type: object
+      required: [code, name, credits, semester, prerequisites, state, missingPrerequisites]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        credits: { type: integer }
+        semester: { type: integer }
+        prerequisites: { type: array, items: { type: string } }
+        state:
+          type: string
+          description: '`PASSED` in the record; `IN_PROGRESS` confirmed this term; `AVAILABLE` prerequisites met; `LOCKED` otherwise'
+          enum: [PASSED, IN_PROGRESS, AVAILABLE, LOCKED]
+        missingPrerequisites: { type: array, items: { type: string } }
+
+    Pensum:
+      type: object
+      required: [student, subjects, totals]
+      properties:
+        student: { $ref: '#/components/schemas/AcademicRecord' }
+        subjects: { type: array, items: { $ref: '#/components/schemas/PensumSubject' } }
+        totals:
+          type: object
+          required: [creditsTotal, creditsPassed, creditsInProgress, percent, subjectsPassed, subjectsTotal]
+          properties:
+            creditsTotal: { type: integer }
+            creditsPassed: { type: integer }
+            creditsInProgress: { type: integer }
+            percent: { type: integer, minimum: 0, maximum: 100, description: Whole percent of credits passed }
+            subjectsPassed: { type: integer }
+            subjectsTotal: { type: integer }
+
+    RejectionReason:
+      type: string
+      enum: [TUITION_UNPAID, PREREQ_MISSING, NO_SEATS, SCHEDULE_CONFLICT]
+
+    EligibilityResult:
+      type: object
+      required: [eligible]
+      properties:
+        eligible: { type: boolean }
+        reason:
+          description: Present when `eligible` is false; `DUPLICATE` for INV-ENR-001
+          type: string
+          enum: [DUPLICATE, PREREQ_MISSING, SCHEDULE_CONFLICT]
+        missingPrerequisites: { type: array, items: { type: string } }
+        conflictingSectionId:
+          nullable: true
+          allOf: [{ $ref: './_shared.yaml#/components/schemas/UUID' }]
+
+    EnrollmentStatus:
+      type: string
+      description: '`CONFIRMED` -> `CANCELLED` only by saga compensation; `REJECTED` and `CANCELLED` are terminal (INV-ENR-004)'
+      enum: [CONFIRMED, REJECTED, CANCELLED]
+
+    EnrollmentRequest:
+      type: object
+      required: [studentId, sectionId, sagaId, origin, outcome]
+      properties:
+        studentId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        sectionId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        sagaId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        reservationId:
+          description: Required when `outcome` is `CONFIRMED`
+          allOf: [{ $ref: './_shared.yaml#/components/schemas/UUID' }]
+        origin: { type: string, enum: [UI, AGENT] }
+        confirmationId:
+          description: Required when `origin` is `AGENT` (INV-ENR-005)
+          allOf: [{ $ref: './_shared.yaml#/components/schemas/UUID' }]
+        outcome: { type: string, enum: [CONFIRMED, REJECTED] }
+        rejectionReason: { $ref: '#/components/schemas/RejectionReason' }
+
+    Enrollment:
+      type: object
+      required: [id, studentId, studentName, term, subjectCode, subjectName, sectionId, groupNumber, slots, status, origin, sagaId, createdAt]
+      properties:
+        id: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        studentId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        studentName: { type: string }
+        term: { $ref: './_shared.yaml#/components/schemas/Term' }
+        subjectCode: { type: string }
+        subjectName: { type: string, description: Snapshot at decision time }
+        sectionId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        groupNumber: { type: integer }
+        slots:
+          type: array
+          description: Schedule snapshot; the conflict rule runs against these
+          items: { $ref: './_shared.yaml#/components/schemas/Slot' }
+        status: { $ref: '#/components/schemas/EnrollmentStatus' }
+        rejectionReason:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/RejectionReason' }]
+        origin: { type: string, enum: [UI, AGENT] }
+        confirmationId:
+          nullable: true
+          allOf: [{ $ref: './_shared.yaml#/components/schemas/UUID' }]
+        sagaId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        createdAt: { $ref: './_shared.yaml#/components/schemas/DateTime' }
+
+    EnrollmentPage:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Enrollment' } }
+        meta: { $ref: './_shared.yaml#/components/schemas/PageMeta' }
+
+    ScheduleItem:
+      type: object
+      required: [enrollmentId, subjectCode, subjectName, groupNumber, slots]
+      properties:
+        enrollmentId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        subjectCode: { type: string }
+        subjectName: { type: string }
+        groupNumber: { type: integer }
+        slots: { type: array, items: { $ref: './_shared.yaml#/components/schemas/Slot' } }
+
+    ScheduleItemPage:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/ScheduleItem' } }
+        meta: { $ref: './_shared.yaml#/components/schemas/PageMeta' }
+
+    RosterItem:
+      type: object
+      required: [enrollmentId, studentId, studentName, enrolledAt]
+      properties:
+        enrollmentId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        studentId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        studentName: { type: string }
+        enrolledAt: { $ref: './_shared.yaml#/components/schemas/DateTime' }
+
+    RosterItemPage:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/RosterItem' } }
+        meta: { $ref: './_shared.yaml#/components/schemas/PageMeta' }
+
+    CertificateType:
+      type: string
+      description: Kept in Spanish because the printed documents and the public verification page name them so
+      enum: [estudios, matricula, pago, paz-y-salvo, avance]
+
+    Certificate:
+      type: object
+      required: [id, studentId, studentName, type, code, term, issuedAt]
+      properties:
+        id: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        studentId: { $ref: './_shared.yaml#/components/schemas/UUID' }
+        studentName: { type: string }
+        type: { $ref: '#/components/schemas/CertificateType' }
+        code: { type: string, pattern: '^QMP-[A-Z0-9]{8}$', description: Public verification code printed on the PDF }
+        term: { $ref: './_shared.yaml#/components/schemas/Term' }
+        issuedAt: { $ref: './_shared.yaml#/components/schemas/DateTime' }
+
+    CertificatePage:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Certificate' } }
+        meta: { $ref: './_shared.yaml#/components/schemas/PageMeta' }
+
+    Verification:
+      type: object
+      required: [valid]
+      properties:
+        valid: { type: boolean }
+        type:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/CertificateType' }]
+        studentName: { type: string, nullable: true }
+        issuedAt:
+          nullable: true
+          allOf: [{ $ref: './_shared.yaml#/components/schemas/DateTime' }]
