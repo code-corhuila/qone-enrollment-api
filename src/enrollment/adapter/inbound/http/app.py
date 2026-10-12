@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request
 
-from enrollment.adapter.inbound.http import errors
+from enrollment.adapter.inbound.http import errors, routes_certificates, routes_saga  # noqa: F401 - they register routes
 from enrollment.adapter.inbound.http.auth import TokenVerifier
 from enrollment.adapter.inbound.http.router import router
 from enrollment.application.port.inbound.enrollment import EnrollmentUseCases
