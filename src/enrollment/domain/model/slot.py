@@ -21,7 +21,10 @@ class Day(StrEnum):
     SAT = "SAT"
 
 
-@dataclass(frozen=True, order=True)
+DAY_RANK = {day: rank for rank, day in enumerate(Day)}
+
+
+@dataclass(frozen=True)
 class Slot:
     day: Day
     start: time
@@ -48,6 +51,10 @@ class Slot:
             raise ValidationError(details)
         assert parsed_day is not None
         return Slot(parsed_day, times[0], times[1])
+
+    def __lt__(self, other: "Slot") -> bool:
+        """Slots sort by weekday, then time: Monday before Tuesday, not alphabetically."""
+        return (DAY_RANK[self.day], self.start, self.end) < (DAY_RANK[other.day], other.start, other.end)
 
     def overlaps(self, other: "Slot") -> bool:
         return self.day is other.day and self.start < other.end and other.start < self.end
