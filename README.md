@@ -31,13 +31,36 @@ SERVICE token (ADR-008, D-10). Python 3.12 + FastAPI, hexagonal (ADR-007).
 ## How to run it
 
 ```bash
-python -m venv .venv && . .venv/bin/activate      # Windows: .venv\\Scripts\\activate
+python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 ruff check .
-python -m pytest
+python -m pytest                                   # domain, use cases, HTTP, contract, architecture
+cp .env.example .env                               # JWT_PUBLIC_KEY (or _FILE), ENROLLMENT_DATABASE_URL
+python -m apps.api                                 # http://localhost:8000/api/v1/enrollment/health
 ```
 
-The HTTP server, its configuration and the PostgreSQL adapter arrive with the next pull requests.
+Without `ENROLLMENT_DATABASE_URL` the service starts over an empty in-memory store (development
+only; it says so in the log). With it, the store is `qone-enrollment-db`: start that repository's
+compose, run its Flyway runner, and point the URL at it.
+
+Integration tests against the real schema and seeds (Annex C) run only when `TEST_DATABASE_URL`
+is set; `ci.yml` clones `qone-enrollment-db`, migrates a fresh PostgreSQL and runs them:
+
+```bash
+TEST_DATABASE_URL=postgresql://enrollment:password@localhost:5432/enrollment python -m pytest tests/test_postgres_integration.py
+```
+
+Container image and compose (`deploy/`, Annex G): `docker build -f deploy/Dockerfile -t
+qone-enrollment-api:dev .`, then `deploy/smoke.sh` against the running container; `ci.yml` builds
+and smoke-checks the image. `deploy/compose.yml` is what `qone-infra` includes: `expose` only,
+after `enrollment-db` is healthy.
+
+Explicit limits (norm 5.3.10), declared in `apps/api/factory.py`: pool 10 connections with a
+5 s wait, statement timeout 5 s, keep-alive 60 s, graceful shutdown 20 s; the header read
+timeout is imposed by the gateway. `CURRENT_TERM` and `DEFAULT_PROGRAM`
+(the program of a record created on first access) come from the environment.
+Every log line is JSON with the `traceId`. `scripts/sync-contracts.sh [ref]` refreshes the
+contract copies in `contracts/openapi/`.
 
 ## Branching
 

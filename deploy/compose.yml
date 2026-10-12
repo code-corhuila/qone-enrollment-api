@@ -1,0 +1,33 @@
+# The enrollment service as qone-infra composes it (Annex G): expose only, reachable on the
+# platform network through the gateway; it starts after its database is healthy and after the
+# migrations ran (`run --rm enrollment-db-migrate` from qone-infra). Every value comes from .env.
+services:
+  qone-enrollment-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: qone-enrollment-api:${IMAGE_TAG:-dev}
+    container_name: qone-enrollment-api
+    restart: unless-stopped
+    environment:
+      ENROLLMENT_DATABASE_URL: postgresql://${ENROLLMENT_DB_USER:-enrollment}:${ENROLLMENT_DB_PASSWORD:?ENROLLMENT_DB_PASSWORD is required}@enrollment-db:5432/${ENROLLMENT_DB_NAME:-enrollment}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:?JWT_PUBLIC_KEY is required}
+      CURRENT_TERM: ${CURRENT_TERM:-2026-B}
+      DEFAULT_PROGRAM: ${DEFAULT_PROGRAM:-Ingeniería de Software}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    expose:
+      - "8000"
+    depends_on:
+      enrollment-db:
+        condition: service_healthy
+    networks:
+      - platform
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/enrollment/health', timeout=2).status == 200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+networks:
+  platform:
+    external: true
