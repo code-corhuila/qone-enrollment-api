@@ -1,0 +1,57 @@
+# The enrollment service as qone-infra composes it (Annex G): expose only, reachable on the
+# platform network through the gateway; it starts after its database is healthy and after the
+# migrations ran (`run --rm enrollment-db-migrate` from qone-infra). Every value comes from .env.
+services:
+  qone-enrollment-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: qone-enrollment-api:${IMAGE_TAG:-dev}
+    container_name: qone-enrollment-api
+    restart: unless-stopped
+    environment:
+      ENROLLMENT_DATABASE_URL: postgresql://${ENROLLMENT_DB_USER:-enrollment}:${ENROLLMENT_DB_PASSWORD:?ENROLLMENT_DB_PASSWORD is required}@enrollment-db:5432/${ENROLLMENT_DB_NAME:-enrollment}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:?JWT_PUBLIC_KEY is required}
+      CURRENT_TERM: ${CURRENT_TERM:-2026-B}
+      DEFAULT_PROGRAM: ${DEFAULT_PROGRAM:-Ingeniería de Software}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    expose:
+      - "8000"
+    depends_on:
+      enrollment-db:
+        condition: service_healthy
+    networks:
+      - platform
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/enrollment/health', timeout=2).status == 200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # The projection consumer: a second process of the same image (D-11). It keeps the copies of
+  # catalog and billing current from their events; the API keeps answering meanwhile.
+  qone-enrollment-consumer:
+    image: qone-enrollment-api:${IMAGE_TAG:-dev}
+    container_name: qone-enrollment-consumer
+    restart: unless-stopped
+    command: ["python", "-m", "apps.consumer"]
+    environment:
+      ENROLLMENT_DATABASE_URL: postgresql://${ENROLLMENT_DB_USER:-enrollment}:${ENROLLMENT_DB_PASSWORD:?ENROLLMENT_DB_PASSWORD is required}@enrollment-db:5432/${ENROLLMENT_DB_NAME:-enrollment}
+      RABBITMQ_URL: ${RABBITMQ_URL:?RABBITMQ_URL is required}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:-unused}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      qone-enrollment-api:
+        condition: service_started
+    # No HTTP here: the image's check would probe the API port; the process itself is the signal.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys; sys.exit(0 if os.path.exists('/proc/1/cmdline') else 1)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    networks:
+      - platform
+
+networks:
+  platform:
+    external: true
