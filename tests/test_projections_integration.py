@@ -57,3 +57,32 @@ def test_inbox_seats_and_tuition_with_late_events():
                 (*tuition.values(), SANTIAGO),
             )
         pool.close()
+
+
+def test_a_section_event_keeps_its_professor():
+    from enrollment.adapter.outbound.persistence.postgres import PostgresProjections, connect
+    from enrollment.adapter.outbound.persistence.projections import PostgresProjectionStore
+
+    pool = connect(URL, max_size=2)
+    store, read, section_id = PostgresProjectionStore(pool), PostgresProjections(pool), uuid4()
+    ana = UUID("22222222-2222-4222-8222-222222222222")
+    created = {
+        "sectionId": str(section_id),
+        "subjectCode": "ISW-604",
+        "subjectName": "Sistemas Distribuidos",
+        "term": "2026-B",
+        "groupNumber": 9,
+        "professorId": str(ana),
+        "professorName": "Profesor Demo 02",
+        "slots": [{"day": "SAT", "start": "08:00", "end": "10:00"}],
+        "seatsAvailable": 30,
+    }
+    try:
+        assert store.apply(uuid4(), ("section", created), AT)
+        assert read.section(section_id).taught_by(ana)
+        assert store.apply(uuid4(), ("section", {**created, "professorId": None}), AT + timedelta(days=1))
+        assert read.section(section_id).professor_id is None
+    finally:
+        with pool.connection() as conn:
+            conn.execute("DELETE FROM enrollment.catalog_section_view WHERE section_id = %s", (section_id,))
+        pool.close()

@@ -18,7 +18,8 @@ class Ineligibility(StrEnum):
 
 @dataclass(frozen=True)
 class SectionView:
-    """A section of the catalog as the projection keeps it."""
+    """A section of the catalog as the projection keeps it, with its professor (None until the
+    projection received it)."""
 
     section_id: UUID
     subject_code: str
@@ -28,6 +29,12 @@ class SectionView:
     professor_name: str
     slots: tuple[Slot, ...]
     seats_available: int
+    professor_id: UUID | None = None
+
+    def taught_by(self, user_id: UUID | None) -> bool:
+        """Whether this user is the section's professor; a section whose professor is unknown is
+        taught by nobody (its roster is then for ADMIN only)."""
+        return self.professor_id is not None and self.professor_id == user_id
 
 
 @dataclass(frozen=True)

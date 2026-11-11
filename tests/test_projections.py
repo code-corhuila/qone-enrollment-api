@@ -104,3 +104,23 @@ def test_a_forged_tuition_paid_does_not_unlock_a_payment_certificate():
         "TuitionPaid", {"invoiceId": "i", "studentId": SANTIAGO, "term": "2026-B", "providerReference": "SIM-7"}
     )
     assert project.handle(paid, "corr") == "applied" and pago(santiago, "pago-key-0003").status_code == 201
+
+
+def test_a_section_keeps_its_professor():
+    created = {
+        "sectionId": "s",
+        "subjectId": "i",
+        "subjectCode": "ISW-604",
+        "subjectName": "Sistemas Distribuidos",
+        "term": "2026-B",
+        "groupNumber": 4,
+        "professorId": "22222222-2222-4222-8222-222222222222",
+        "professorName": "Ana Torres",
+        "capacity": 30,
+        "seatsAvailable": 30,
+        "slots": [],
+    }
+    kind, change = change_of(event("SectionCreated", created))
+    assert kind == "section" and change["professorId"] == "22222222-2222-4222-8222-222222222222"
+    older = {k: v for k, v in created.items() if k != "professorId"}
+    assert change_of(event("SectionCreated", older))[1]["professorId"] is None, "no professor: nobody's roster"
