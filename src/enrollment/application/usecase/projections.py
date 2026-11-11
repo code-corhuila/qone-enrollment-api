@@ -44,7 +44,9 @@ def change_of(event: IncomingEvent) -> tuple[str, dict[str, Any]] | None:
             "slots",
             "seatsAvailable",
         )
-        return "section", {k: p[k] for k in keys}
+        # The professor decides who reads the roster (qone-docs#48); an event without it leaves the
+        # section to nobody but ADMIN instead of failing the consumer.
+        return "section", {**{k: p[k] for k in keys}, "professorId": p.get("professorId")}
     if event.event_type in SEAT_EVENTS:
         return "seats", {"sectionId": p["sectionId"], "seatsAvailable": p["seatsAvailable"]}
     if event.event_type == "InvoiceIssued":

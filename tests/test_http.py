@@ -3,6 +3,7 @@
 import pytest
 
 from tests.http_support import (
+    ANA,
     CARLOS,
     ISW_604_G1,
     LAURA,
@@ -79,6 +80,9 @@ class TestStudentReads:
         assert [r["studentName"] for r in roster["data"]] == ["María José Cabrera"]
         assert client.get(f"{BASE}/sections/{ISW_604_G1}/roster", headers=bearer(PATRICIA, "ADMIN")).status_code == 200
         assert client.get(f"{BASE}/sections/{ISW_604_G1}/roster", headers=laura()).status_code == 403
+        foreign = client.get(f"{BASE}/sections/{ISW_604_G1}/roster", headers=bearer(ANA, "PROFESSOR", "Ana Torres"))
+        assert foreign.status_code == 404 and foreign.json()["error"] == "NOT_FOUND", "F2: Carlos's roster, not Ana's"
+        assert "data" not in foreign.json()
         assert (
             client.get(
                 f"{BASE}/sections/00000000-0000-4000-8000-000000000000/roster", headers=bearer(CARLOS, "PROFESSOR")
