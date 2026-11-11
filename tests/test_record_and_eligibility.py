@@ -86,3 +86,10 @@ def test_the_first_failure_is_the_reason_in_the_contract_order():
 
 def test_ending_when_another_starts_is_not_a_conflict():
     assert check_eligibility(ISW_604_G1, (), set(), [active("ISW-601", ("MON", "10:00", "12:00"))]).eligible
+
+
+def test_a_section_is_taught_only_by_its_professor():
+    carlos, ana = UUID("22222222-2222-4222-8222-222222222221"), UUID("22222222-2222-4222-8222-222222222222")
+    taught = SectionView(uuid4(), "ISW-604", "Sistemas Distribuidos", "2026-B", 1, "Carlos Ramírez", (), 27, carlos)
+    assert taught.taught_by(carlos) and not taught.taught_by(ana) and not taught.taught_by(None)
+    assert not ISW_604_G1.taught_by(carlos), "a section whose professor is unknown is taught by nobody"

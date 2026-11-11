@@ -39,6 +39,12 @@ def health(request: Request):
     return {"status": "ok", "service": request.app.state.service, "version": request.app.state.version}
 
 
+@router.get("/health/ready")
+def ready(request: Request):
+    checks = request.app.state.readiness.check()
+    return {"status": "ready", "service": request.app.state.service, "checks": checks}
+
+
 @router.get("/academic-records/me")
 def my_record(who: Current, service: UseCases):
     return represent_record(service.my_record(who))

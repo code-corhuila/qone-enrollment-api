@@ -10,7 +10,9 @@ from fastapi.testclient import TestClient
 
 from enrollment.adapter.inbound.http.app import create_app
 from enrollment.adapter.inbound.http.auth import TokenVerifier
+from enrollment.adapter.outbound.persistence.memory import InMemoryProbe
 from enrollment.application.usecase.enrollment import EnrollmentService
+from enrollment.application.usecase.readiness import CheckReadiness
 from tests.fakes import FakeRenderer, FixedClock, SequenceIds, seeded_store
 
 
@@ -32,6 +34,7 @@ LAURA = "11111111-1111-4111-8111-111111111111"
 SANTIAGO = "11111111-1111-4111-8111-111111111112"
 MARIA = "11111111-1111-4111-8111-111111111113"
 CARLOS = "22222222-2222-4222-8222-222222222221"
+ANA = "22222222-2222-4222-8222-222222222222"
 PATRICIA = "33333333-3333-4333-8333-333333333331"
 ISW_601_G1 = "55555555-5555-4555-8555-555555555501"
 ISW_604_G1 = "55555555-5555-4555-8555-555555555505"
@@ -52,7 +55,7 @@ def bearer(sub: str, role: str, name: str = "", **kw) -> dict[str, str]:
     return {"Authorization": f"Bearer {mint(sub, role, name, **kw)}"}
 
 
-def make_client():
+def make_client(readiness: CheckReadiness | None = None):
     store = seeded_store()
     records, projections, enrollments, certificates = store.as_ports()
     service = EnrollmentService(
@@ -66,4 +69,6 @@ def make_client():
         "2026-B",
         "Ingeniería de Software",
     )
-    return TestClient(create_app(service, TokenVerifier(PUBLIC_PEM)), raise_server_exceptions=False), store
+    readiness = readiness or CheckReadiness([InMemoryProbe()])
+    app = create_app(service, TokenVerifier(PUBLIC_PEM), readiness)
+    return TestClient(app, raise_server_exceptions=False), store

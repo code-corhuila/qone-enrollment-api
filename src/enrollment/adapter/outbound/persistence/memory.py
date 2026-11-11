@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from enrollment.application.port.outbound.ports import DuplicateActive
+from enrollment.application.port.outbound.ports import DuplicateActive, IdempotencyKey, Keyed, KeyTaken
 from enrollment.domain.model.certificate import Certificate
 from enrollment.domain.model.eligibility import SectionView
 from enrollment.domain.model.enrollment import Enrollment, EnrollmentStatus
@@ -26,7 +26,8 @@ class InMemoryEnrollment:
         self.enrollments = {e.id: e for e in enrollments or []}
         self.certificates: dict[UUID, Certificate] = {}
         self.documents: dict[UUID, bytes] = {}
-        self.keys: dict[str, UUID] = {}
+        # (owner, key) -> (resource type, resource id, request hash): a key is scoped to its owner
+        self.keys: dict[tuple[str, str], tuple[str, UUID, str | None]] = {}
         self.outbox: list[DomainEvent] = []
 
     # --- RecordStore
@@ -49,10 +50,20 @@ class InMemoryEnrollment:
     def tuition_paid(self, student_id: UUID, term: str) -> bool:
         return self.tuition.get((student_id, term)) == "PAID"
 
+    def _keyed(self, owner: str, key: str, resource_type: str, resources: dict):
+        recorded = self.keys.get((owner, key))
+        if recorded is None or recorded[0] != resource_type or recorded[1] not in resources:
+            return None
+        return Keyed(resources[recorded[1]], recorded[2])
+
+    def _claim(self, key: IdempotencyKey, resource_type: str, resource_id: UUID) -> None:
+        if (key.owner, key.value) in self.keys:
+            raise KeyTaken()
+        self.keys[(key.owner, key.value)] = (resource_type, resource_id, key.request_hash)
+
     # --- EnrollmentStore
-    def find_enrollment_by_key(self, key: str) -> Enrollment | None:
-        target = self.keys.get(key)
-        return self.enrollments.get(target) if target else None
+    def find_enrollment_by_key(self, owner: str, key: str) -> Keyed[Enrollment] | None:
+        return self._keyed(owner, key, "enrollment", self.enrollments)
 
     def find_enrollment(self, enrollment_id: UUID) -> Enrollment | None:
         return self.enrollments.get(enrollment_id)
@@ -85,10 +96,9 @@ class InMemoryEnrollment:
         start = (page - 1) * limit
         return rows[start : start + limit], len(rows)
 
-    def create_enrollment(self, enrollment: Enrollment, key: str, event: DomainEvent):
-        earlier = self.find_enrollment_by_key(key)
-        if earlier is not None:
-            return earlier, False
+    def create_enrollment(self, enrollment: Enrollment, key: IdempotencyKey, event: DomainEvent) -> None:
+        if (key.owner, key.value) in self.keys:
+            raise KeyTaken()
         if enrollment.status is EnrollmentStatus.CONFIRMED and any(
             e.student_id == enrollment.student_id
             and e.subject_code == enrollment.subject_code
@@ -97,19 +107,17 @@ class InMemoryEnrollment:
             for e in self.enrollments.values()
         ):
             raise DuplicateActive()
+        self._claim(key, "enrollment", enrollment.id)
         self.enrollments[enrollment.id] = enrollment
-        self.keys[key] = enrollment.id
         self.outbox.append(event)
-        return enrollment, True
 
     def save_cancelled(self, enrollment: Enrollment, event: DomainEvent) -> None:
         self.enrollments[enrollment.id] = enrollment
         self.outbox.append(event)
 
     # --- CertificateStore
-    def find_certificate_by_key(self, key: str) -> Certificate | None:
-        target = self.keys.get(key)
-        return self.certificates.get(target) if target else None
+    def find_certificate_by_key(self, owner: str, key: str) -> Keyed[Certificate] | None:
+        return self._keyed(owner, key, "certificate", self.certificates)
 
     def find_certificate(self, certificate_id: UUID) -> Certificate | None:
         return self.certificates.get(certificate_id)
@@ -123,15 +131,13 @@ class InMemoryEnrollment:
         start = (page - 1) * limit
         return rows[start : start + limit], len(rows)
 
-    def create_certificate(self, certificate: Certificate, document: bytes, key: str, event: DomainEvent):
-        earlier = self.find_certificate_by_key(key)
-        if earlier is not None:
-            return earlier, False
+    def create_certificate(
+        self, certificate: Certificate, document: bytes, key: IdempotencyKey, event: DomainEvent
+    ) -> None:
+        self._claim(key, "certificate", certificate.id)
         self.certificates[certificate.id] = certificate
         self.documents[certificate.id] = document
-        self.keys[key] = certificate.id
         self.outbox.append(event)
-        return certificate, True
 
     def document_of(self, certificate_id: UUID) -> bytes | None:
         return self.documents.get(certificate_id)
@@ -166,3 +172,12 @@ class _CertificatePort:
     def __init__(self, s: InMemoryEnrollment) -> None:
         self.find_by_key, self.find, self.find_by_code = s.find_certificate_by_key, s.find_certificate, s.find_by_code
         self.page_of, self.create, self.document_of = s.certificate_page, s.create_certificate, s.document_of
+
+
+class InMemoryProbe:
+    """The ready probe of a service without a database: the in-memory store is always there."""
+
+    name = "database"
+
+    def ping(self) -> None:
+        return None

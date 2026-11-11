@@ -1,5 +1,5 @@
 """The FastAPI application of the enrollment service: correlation and access log (norm 5.3.9),
-the error envelope, the routes."""
+the RED metrics and `/metrics` (HU-OBS-001), the error envelope, the routes."""
 
 import logging
 import time
@@ -7,10 +7,16 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request
 
-from enrollment.adapter.inbound.http import errors, routes_certificates, routes_saga  # noqa: F401 - they register routes
+from enrollment.adapter.inbound.http import (  # noqa: F401 - the route modules register their routes
+    errors,
+    metrics,
+    routes_certificates,
+    routes_saga,
+)
 from enrollment.adapter.inbound.http.auth import TokenVerifier
 from enrollment.adapter.inbound.http.router import router
 from enrollment.application.port.inbound.enrollment import EnrollmentUseCases
+from enrollment.application.usecase.readiness import CheckReadiness
 
 SERVICE = "qone-enrollment-api"
 VERSION = "2.0.0"
@@ -18,10 +24,11 @@ CORRELATION_HEADER = "X-Correlation-Id"
 access = logging.getLogger("enrollment.access")
 
 
-def create_app(use_cases: EnrollmentUseCases, verifier: TokenVerifier) -> FastAPI:
+def create_app(use_cases: EnrollmentUseCases, verifier: TokenVerifier, readiness: CheckReadiness) -> FastAPI:
     app = FastAPI(title=SERVICE, version=VERSION, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.use_cases = use_cases
     app.state.verifier = verifier
+    app.state.readiness = readiness
     app.state.service = SERVICE
     app.state.version = VERSION
 
@@ -48,6 +55,7 @@ def create_app(use_cases: EnrollmentUseCases, verifier: TokenVerifier) -> FastAP
         )
         return response
 
+    metrics.install(app, SERVICE)
     errors.install(app)
     app.include_router(router)
     return app

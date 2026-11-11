@@ -17,6 +17,29 @@ class DuplicateActive(Exception):
     """The partial unique index of INV-ENR-001 fired."""
 
 
+class KeyTaken(Exception):
+    """The owner's Idempotency-Key was recorded meanwhile (a concurrent first attempt won)."""
+
+
+@dataclass(frozen=True)
+class IdempotencyKey:
+    """An Idempotency-Key as the stores keep it (qone-docs#55): scoped to its owner (the user id of the
+    token, or the subject of a SERVICE token) with the SHA-256 of the canonical request body."""
+
+    owner: str
+    value: str
+    request_hash: str
+
+
+@dataclass(frozen=True)
+class Keyed[T]:
+    """What an owner's key recorded: the resource and the fingerprint of the body that created it
+    (None for a key recorded before the fingerprint existed)."""
+
+    item: T
+    request_hash: str | None
+
+
 class RecordStore(Protocol):
     def find(self, student_id: UUID) -> AcademicRecord | None: ...
 
@@ -35,7 +58,7 @@ class Projections(Protocol):
 
 
 class EnrollmentStore(Protocol):
-    def find_by_key(self, idempotency_key: str) -> Enrollment | None: ...
+    def find_by_key(self, owner: str, idempotency_key: str) -> Keyed[Enrollment] | None: ...
 
     def find(self, enrollment_id: UUID) -> Enrollment | None: ...
 
@@ -47,14 +70,14 @@ class EnrollmentStore(Protocol):
 
     def roster(self, section_id: UUID, page: int, limit: int) -> tuple[list[Enrollment], int]: ...
 
-    def create(self, enrollment: Enrollment, idempotency_key: str, event: DomainEvent) -> tuple[Enrollment, bool]:
-        """One transaction: the row, its slots, the key and the event. Raises DuplicateActive."""
+    def create(self, enrollment: Enrollment, key: IdempotencyKey, event: DomainEvent) -> None:
+        """One transaction: the row, its slots, the key and the event. Raises DuplicateActive or KeyTaken."""
 
     def save_cancelled(self, enrollment: Enrollment, event: DomainEvent) -> None: ...
 
 
 class CertificateStore(Protocol):
-    def find_by_key(self, idempotency_key: str) -> Certificate | None: ...
+    def find_by_key(self, owner: str, idempotency_key: str) -> Keyed[Certificate] | None: ...
 
     def find(self, certificate_id: UUID) -> Certificate | None: ...
 
@@ -62,9 +85,8 @@ class CertificateStore(Protocol):
 
     def page_of(self, student_id: UUID, page: int, limit: int) -> tuple[list[Certificate], int]: ...
 
-    def create(
-        self, certificate: Certificate, document: bytes, idempotency_key: str, event: DomainEvent
-    ) -> tuple[Certificate, bool]: ...
+    def create(self, certificate: Certificate, document: bytes, key: IdempotencyKey, event: DomainEvent) -> None:
+        """One transaction: the row with its document, the key and the event. Raises KeyTaken."""
 
     def document_of(self, certificate_id: UUID) -> bytes | None: ...
 
@@ -91,3 +113,12 @@ class Clock(Protocol):
 
 class IdGenerator(Protocol):
     def new_id(self) -> UUID: ...
+
+
+class DependencyProbe(Protocol):
+    """A dependency the service needs to take traffic (HU-PLT-004): `ping` returns when it answers
+    within the adapter's short timeout and raises otherwise."""
+
+    name: str
+
+    def ping(self) -> None: ...

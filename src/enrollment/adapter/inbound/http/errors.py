@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from enrollment.adapter.inbound.http.auth import AuthError
-from enrollment.application.errors import Forbidden, NotFound
+from enrollment.application.errors import DependencyUnavailable, Forbidden, IdempotencyKeyReused, NotFound
 from enrollment.domain.model.errors import BusinessRuleViolation, FieldError, InvalidStatusTransition, ValidationError
 
 log = logging.getLogger("enrollment.http")
@@ -54,9 +54,18 @@ def install(app: FastAPI) -> None:
     async def _business_rule(request: Request, error: BusinessRuleViolation):
         return envelope(request, 422, "BUSINESS_RULE_VIOLATION", error.message)
 
+    @app.exception_handler(IdempotencyKeyReused)
+    async def _key_reused(request: Request, error: IdempotencyKeyReused):
+        return envelope(request, 422, "IDEMPOTENCY_KEY_REUSED", error.message)
+
     @app.exception_handler(InvalidStatusTransition)
     async def _transition(request: Request, error: InvalidStatusTransition):
         return envelope(request, 422, "INVALID_STATUS_TRANSITION", error.message)
+
+    @app.exception_handler(DependencyUnavailable)
+    async def _unavailable(request: Request, error: DependencyUnavailable):
+        log.warning("not ready: %s (%s)", error.message, error.__cause__, extra={"traceId": trace_id(request)})
+        return envelope(request, 503, "SERVICE_UNAVAILABLE", error.message)
 
     @app.exception_handler(StarletteHTTPException)
     async def _http(request: Request, error: StarletteHTTPException):
