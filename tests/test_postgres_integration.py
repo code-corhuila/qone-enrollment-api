@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from enrollment.application.port.outbound.ports import DuplicateActive
+from enrollment.application.port.outbound.ports import DuplicateActive, IdempotencyKey, Keyed, KeyTaken
 from enrollment.domain.model.certificate import CertificateType, issue
 from enrollment.domain.model.enrollment import Enrollment, EnrollmentStatus, Origin
 from enrollment.domain.model.events import certificate_issued, enrollment_event
@@ -19,6 +19,8 @@ NOW = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
 LAURA = UUID("11111111-1111-4111-8111-111111111111")
 SANTIAGO = UUID("11111111-1111-4111-8111-111111111112")
 ISW_604_G1 = UUID("55555555-5555-4555-8555-555555555505")
+SAGA = "qone-workflow"
+HASH, OTHER_HASH = "a" * 64, "b" * 64
 
 
 @pytest.fixture(scope="module")
@@ -96,8 +98,8 @@ def test_an_enrollment_once_per_key_inv_enr_001_and_cancel(stores, pool):
         NOW,
         reservation_id=uuid4(),
     )
-    stored, created = enrollments.create(e, "it-enroll-key-1", enrollment_event(e))
-    assert created and enrollments.find(e.id).slots == section.slots
+    enrollments.create(e, IdempotencyKey(SAGA, "it-enroll-key-1", HASH), enrollment_event(e))
+    assert enrollments.find(e.id).slots == section.slots
     retry = Enrollment.record(
         uuid4(),
         LAURA,
@@ -109,7 +111,10 @@ def test_an_enrollment_once_per_key_inv_enr_001_and_cancel(stores, pool):
         NOW,
         reservation_id=uuid4(),
     )
-    assert enrollments.create(retry, "it-enroll-key-1", enrollment_event(retry)) == (stored, False)
+    with pytest.raises(KeyTaken):
+        enrollments.create(retry, IdempotencyKey(SAGA, "it-enroll-key-1", HASH), enrollment_event(retry))
+    assert enrollments.find_by_key(SAGA, "it-enroll-key-1") == Keyed(enrollments.find(e.id), HASH)
+    assert enrollments.find(retry.id) is None
     again = Enrollment.record(
         uuid4(),
         LAURA,
@@ -122,7 +127,7 @@ def test_an_enrollment_once_per_key_inv_enr_001_and_cancel(stores, pool):
         reservation_id=uuid4(),
     )
     with pytest.raises(DuplicateActive):
-        enrollments.create(again, "it-enroll-key-2", enrollment_event(again))
+        enrollments.create(again, IdempotencyKey(SAGA, "it-enroll-key-2", HASH), enrollment_event(again))
     cancelled, _ = e.cancel(NOW)
     enrollments.save_cancelled(cancelled, enrollment_event(cancelled))
     assert enrollments.find(e.id).status is EnrollmentStatus.CANCELLED
@@ -141,11 +146,29 @@ def test_an_enrollment_once_per_key_inv_enr_001_and_cancel(stores, pool):
 def test_a_certificate_keeps_its_document_and_is_found_by_code(stores):
     *_, certificates = stores
     c = issue(uuid4(), LAURA, "Laura Gómez", CertificateType.ESTUDIOS, "2026-B", NOW)
-    stored, created = certificates.create(c, b"%PDF-1.4 test", "it-cert-key-1", certificate_issued(c))
-    assert created and certificates.find_by_code(c.code) == c and certificates.document_of(c.id) == b"%PDF-1.4 test"
+    certificates.create(c, b"%PDF-1.4 test", IdempotencyKey(str(LAURA), "it-cert-key-1", HASH), certificate_issued(c))
+    assert certificates.find_by_code(c.code) == c and certificates.document_of(c.id) == b"%PDF-1.4 test"
     retry = issue(uuid4(), LAURA, "Laura Gómez", CertificateType.ESTUDIOS, "2026-B", NOW)
-    assert certificates.create(retry, b"other", "it-cert-key-1", certificate_issued(retry)) == (stored, False)
-    assert certificates.page_of(LAURA, 1, 20) == ([c], 1)
+    with pytest.raises(KeyTaken):
+        certificates.create(
+            retry, b"other", IdempotencyKey(str(LAURA), "it-cert-key-1", HASH), certificate_issued(retry)
+        )
+    assert certificates.page_of(LAURA, 1, 20) == ([c], 1) and certificates.find(retry.id) is None
+
+
+def test_a_key_is_scoped_to_its_owner_with_the_request_fingerprint(stores):
+    """F1 (qone-docs#55): the same key from Laura and from Santiago are two keys; each owner finds
+    only its own certificate and the fingerprint of the body that created it."""
+    *_, certificates = stores
+    hers = issue(uuid4(), LAURA, "Laura Gómez", CertificateType.ESTUDIOS, "2026-B", NOW)
+    his = issue(uuid4(), SANTIAGO, "Santiago Rojas", CertificateType.ESTUDIOS, "2026-B", NOW)
+    certificates.create(hers, b"%PDF", IdempotencyKey(str(LAURA), "it-shared-key", HASH), certificate_issued(hers))
+    certificates.create(
+        his, b"%PDF", IdempotencyKey(str(SANTIAGO), "it-shared-key", OTHER_HASH), certificate_issued(his)
+    )
+    assert certificates.find_by_key(str(LAURA), "it-shared-key") == Keyed(hers, HASH)
+    assert certificates.find_by_key(str(SANTIAGO), "it-shared-key") == Keyed(his, OTHER_HASH)
+    assert certificates.find_by_key("qone-workflow", "it-shared-key") is None
 
 
 def test_the_ready_probe_answers_against_the_real_engine(pool):

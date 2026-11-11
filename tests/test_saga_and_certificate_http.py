@@ -62,14 +62,14 @@ class TestSaga:
         assert [d["field"] for d in bad.json()["details"]] == ["studentId", "sectionId"]
 
     def test_record_replay_duplicate_and_cancel(self, client):
-        key = {"Idempotency-Key": "saga-1:confirm-enrollment"}
-        r = client.post(f"{BASE}/enrollments", json=confirm_body(), headers={**saga(), **key})
+        key, body = {"Idempotency-Key": "saga-1:confirm-enrollment"}, confirm_body()
+        r = client.post(f"{BASE}/enrollments", json=body, headers={**saga(), **key})
         assert (
             r.status_code == 201
             and r.json()["status"] == "CONFIRMED"
             and r.headers["Location"].endswith(r.json()["id"])
         )
-        assert client.post(f"{BASE}/enrollments", json=confirm_body(), headers={**saga(), **key}).status_code == 200
+        assert client.post(f"{BASE}/enrollments", json=body, headers={**saga(), **key}).status_code == 200
         dup = client.post(
             f"{BASE}/enrollments",
             json=confirm_body(),
@@ -170,6 +170,23 @@ class TestCertificates:
         assert r.status_code == 422 and r.json()["message"].startswith("INV-ENR-002")
         bad = client.post(f"{BASE}/certificates", json={"type": "diploma"}, headers=santiago)
         assert [d["field"] for d in bad.json()["details"]] == ["Idempotency-Key", "type"]
+
+    def test_a_key_is_scoped_to_its_owner(self, client):
+        """F1 (qone-docs#55): Santiago sends the key Laura used and gets his own certificate, never hers;
+        the same owner and key with another body is 422 IDEMPOTENCY_KEY_REUSED."""
+        laura, santiago = bearer(LAURA, "STUDENT", "Laura Gómez"), bearer(SANTIAGO, "STUDENT", "Santiago Rojas")
+        key = {"Idempotency-Key": "shared-key-0001"}
+        hers = client.post(f"{BASE}/certificates", json={"type": "estudios"}, headers={**laura, **key})
+        his = client.post(f"{BASE}/certificates", json={"type": "estudios"}, headers={**santiago, **key})
+        assert hers.status_code == 201 and his.status_code == 201
+        assert his.json()["id"] != hers.json()["id"] and his.json()["studentId"] == SANTIAGO
+        replay = client.post(f"{BASE}/certificates", json={"type": "estudios"}, headers={**laura, **key})
+        assert replay.status_code == 200 and replay.json()["id"] == hers.json()["id"]
+        for who in (laura, santiago):
+            reused = client.post(f"{BASE}/certificates", json={"type": "matricula"}, headers={**who, **key})
+            assert reused.status_code == 422 and reused.json()["error"] == "IDEMPOTENCY_KEY_REUSED"
+            assert set(reused.json()) == {"error", "message", "traceId"}
+        assert client.get(f"{BASE}/certificates/me", headers=santiago).json()["meta"]["total"] == 1
 
 
 def test_the_pdf_renderer_writes_a_real_pdf_with_the_code():
