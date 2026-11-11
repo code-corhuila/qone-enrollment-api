@@ -43,10 +43,12 @@ class PostgresProjectionStore:
     def _section(conn: psycopg.Connection, d: dict, at: datetime) -> None:
         conn.execute(
             "INSERT INTO enrollment.catalog_section_view (section_id, subject_code, subject_name, term, group_number, "
-            "professor_name, slots, seats_available, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "professor_id, professor_name, slots, seats_available, updated_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (section_id) DO UPDATE SET subject_code = EXCLUDED.subject_code, subject_name = "
             "EXCLUDED.subject_name, "
-            "term = EXCLUDED.term, group_number = EXCLUDED.group_number, professor_name = EXCLUDED.professor_name, "
+            "term = EXCLUDED.term, group_number = EXCLUDED.group_number, professor_id = EXCLUDED.professor_id, "
+            "professor_name = EXCLUDED.professor_name, "
             "slots = EXCLUDED.slots, seats_available = EXCLUDED.seats_available, updated_at = EXCLUDED.updated_at "
             "WHERE enrollment.catalog_section_view.updated_at <= EXCLUDED.updated_at",
             (
@@ -55,6 +57,7 @@ class PostgresProjectionStore:
                 d["subjectName"],
                 d["term"],
                 d["groupNumber"],
+                d.get("professorId"),
                 d["professorName"],
                 json.dumps(d["slots"]),
                 d["seatsAvailable"],

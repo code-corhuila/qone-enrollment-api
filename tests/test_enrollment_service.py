@@ -30,6 +30,7 @@ from tests.fakes import (
 laura = Caller(LAURA, Role.STUDENT, "Laura Gómez", str(LAURA))
 santiago = Caller(SANTIAGO, Role.STUDENT, "Santiago Rojas", str(SANTIAGO))
 carlos = Caller(UUID("22222222-2222-4222-8222-222222222221"), Role.PROFESSOR, "Carlos Ramírez")
+ana = Caller(UUID("22222222-2222-4222-8222-222222222222"), Role.PROFESSOR, "Ana Torres")
 admin = Caller(UUID("33333333-3333-4333-8333-333333333331"), Role.ADMIN, "Patricia Mora")
 saga = Caller(None, Role.SERVICE, "qone-workflow", "qone-workflow")
 
@@ -196,6 +197,15 @@ class TestReads:
             service.roster(carlos, uuid4(), 1, 20)
         with pytest.raises(Forbidden):
             service.roster(laura, ISW_604_G1.section_id, 1, 20)
+
+    def test_a_professor_reads_only_the_roster_of_her_own_sections(self, world):
+        """F2 (qone-docs#48, D-03): Ana's roster is hers; Carlos's section does not exist for her."""
+        _, _, service = world
+        with pytest.raises(NotFound):
+            service.roster(ana, ISW_604_G1.section_id, 1, 20)
+        assert service.roster(ana, ISW_604_G2.section_id, 1, 20).total == 0
+        with pytest.raises(NotFound):
+            service.roster(carlos, ISW_604_G2.section_id, 1, 20)
 
 
 class TestCertificates:

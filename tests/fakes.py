@@ -14,6 +14,9 @@ TERM = "2026-B"
 LAURA = UUID("11111111-1111-4111-8111-111111111111")
 SANTIAGO = UUID("11111111-1111-4111-8111-111111111112")
 MARIA = UUID("11111111-1111-4111-8111-111111111113")
+CARLOS = UUID("22222222-2222-4222-8222-222222222221")
+ANA = UUID("22222222-2222-4222-8222-222222222222")
+PROFESSORS = {"Carlos Ramírez": CARLOS, "Ana Torres": ANA}
 
 SUBJECTS = [
     SubjectView("ISW-501", "Bases de Datos I", 3, 5, ()),
@@ -35,6 +38,7 @@ def section(n: int, code: str, name: str, group: int, professor: str, seats: int
         professor,
         tuple(Slot.parse(*s) for s in slots),
         seats,
+        PROFESSORS[professor],
     )
 
 

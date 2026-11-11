@@ -149,7 +149,7 @@ class PostgresProjections:
         with self._pool.connection() as conn:
             row = conn.execute(
                 "SELECT section_id, subject_code, subject_name, term, group_number, professor_name, slots, "
-                "seats_available "
+                "seats_available, professor_id "
                 "FROM enrollment.catalog_section_view WHERE section_id = %s",
                 (section_id,),
             ).fetchone()
@@ -165,6 +165,7 @@ class PostgresProjections:
             row["professor_name"],
             slots,
             row["seats_available"],
+            row["professor_id"],
         )
 
     def tuition_paid(self, student_id: UUID, term: str) -> bool:

@@ -19,6 +19,8 @@ NOW = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
 LAURA = UUID("11111111-1111-4111-8111-111111111111")
 SANTIAGO = UUID("11111111-1111-4111-8111-111111111112")
 ISW_604_G1 = UUID("55555555-5555-4555-8555-555555555505")
+CARLOS = UUID("22222222-2222-4222-8222-222222222221")
+ANA = UUID("22222222-2222-4222-8222-222222222222")
 
 
 @pytest.fixture(scope="module")
@@ -64,6 +66,7 @@ def test_the_seed_reads_back_through_the_record_and_the_projections(stores):
     assert projections.subject("ISW-604").prerequisites == ("RED-501",) and len(projections.subjects()) == 14
     section = projections.section(ISW_604_G1)
     assert section.subject_code == "ISW-604" and [s.day.value for s in section.slots] == ["MON", "WED"]
+    assert section.taught_by(CARLOS) and not section.taught_by(ANA), "the seeded professor (V020)"
     assert projections.tuition_paid(LAURA, "2026-B") and not projections.tuition_paid(SANTIAGO, "2026-B")
     assert [e.subject_code for e in enrollments.confirmed_of(LAURA, "2026-B")] == [
         "ISW-601",
