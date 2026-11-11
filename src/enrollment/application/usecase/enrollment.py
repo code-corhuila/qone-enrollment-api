@@ -2,12 +2,17 @@
 and ownership (07-api/authentication.md access matrix): the `/me` reads, the certificates and
 their documents are STUDENT only; one enrollment for its owner, PROFESSOR, ADMIN or SERVICE
 (another student gets 403); the roster for PROFESSOR or ADMIN; the saga steps for the SERVICE
-token only (D-10); the verification of a certificate is public."""
+token only (D-10); the verification of a certificate is public. An Idempotency-Key belongs to
+whoever sent it (qone-docs#55): a replay answers only with the caller's own resource, and the same
+caller and key with another body is refused."""
 
+import hashlib
+import json
 import re
+from collections.abc import Callable
 from uuid import UUID
 
-from enrollment.application.errors import Forbidden, NotFound
+from enrollment.application.errors import Forbidden, IdempotencyKeyReused, NotFound
 from enrollment.application.port.inbound.caller import Caller, Role
 from enrollment.application.port.inbound.enrollment import (
     MAX_LIMIT,
@@ -25,7 +30,10 @@ from enrollment.application.port.outbound.ports import (
     DocumentRenderer,
     DuplicateActive,
     EnrollmentStore,
+    IdempotencyKey,
     IdGenerator,
+    Keyed,
+    KeyTaken,
     Projections,
     RecordStore,
 )
@@ -90,10 +98,10 @@ class EnrollmentService(EnrollmentUseCases):
 
     def record(self, caller: Caller, command: RecordEnrollment, idempotency_key: str) -> Created[Enrollment]:
         _require(caller, Role.SERVICE)
-        _check_key(idempotency_key)
-        earlier = self._enrollments.find_by_key(idempotency_key)
+        key = _key_of(caller, idempotency_key, _record_body(command))
+        earlier = _replay(self._enrollments.find_by_key, key)
         if earlier is not None:
-            return Created(earlier, created=False)
+            return earlier
         section = self._projections.section(command.section_id)
         if section is None:
             raise NotFound("section not found")
@@ -113,10 +121,12 @@ class EnrollmentService(EnrollmentUseCases):
             confirmation_id=command.confirmation_id,
         )
         try:
-            stored, created = self._enrollments.create(enrollment, idempotency_key, enrollment_event(enrollment))
+            self._enrollments.create(enrollment, key, enrollment_event(enrollment))
         except DuplicateActive:
             raise _duplicate(enrollment) from None
-        return Created(stored, created)
+        except KeyTaken:
+            return _replayed(self._enrollments.find_by_key, key)
+        return Created(enrollment, created=True)
 
     def cancel(self, caller: Caller, enrollment_id: UUID) -> Enrollment:
         _require(caller, Role.SERVICE)
@@ -177,10 +187,10 @@ class EnrollmentService(EnrollmentUseCases):
 
     def issue_certificate(self, caller: Caller, kind: CertificateType, idempotency_key: str) -> Created[Certificate]:
         _require(caller, Role.STUDENT)
-        _check_key(idempotency_key)
-        earlier = self._certificates.find_by_key(idempotency_key)
+        key = _key_of(caller, idempotency_key, {"type": kind.value})
+        earlier = _replay(self._certificates.find_by_key, key)
         if earlier is not None:
-            return Created(earlier, created=False)
+            return earlier
         record = self._record_of(caller)
         confirmed = self._enrollments.confirmed_of(record.student_id, self._term)
         paid = self._projections.tuition_paid(record.student_id, self._term)
@@ -194,10 +204,11 @@ class EnrollmentService(EnrollmentUseCases):
             certificate, record, confirmed, {s.code: s.credits for s in subjects}, pensum.totals, paid
         )
         document = self._renderer.render(context)
-        stored, created = self._certificates.create(
-            certificate, document, idempotency_key, certificate_issued(certificate)
-        )
-        return Created(stored, created)
+        try:
+            self._certificates.create(certificate, document, key, certificate_issued(certificate))
+        except KeyTaken:
+            return _replayed(self._certificates.find_by_key, key)
+        return Created(certificate, created=True)
 
     def certificate_document(self, caller: Caller, certificate_id: UUID) -> tuple[Certificate, bytes]:
         _require(caller, Role.STUDENT)
@@ -224,6 +235,49 @@ def _require(caller: Caller, *roles: Role) -> None:
 def _check_key(idempotency_key: str) -> None:
     if not KEY_MIN <= len(idempotency_key or "") <= KEY_MAX:
         raise ValidationError([FieldError("Idempotency-Key", "header required, 8 to 128 characters")])
+
+
+def _key_of(caller: Caller, idempotency_key: str, body: dict) -> IdempotencyKey:
+    """The key scoped to its owner (the user id of the token, or the subject of a SERVICE token)
+    with the SHA-256 of the canonical body (sorted keys, no spaces, UTF-8)."""
+    _check_key(idempotency_key)
+    owner = str(caller.user_id) if caller.user_id is not None else caller.subject
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return IdempotencyKey(owner, idempotency_key, hashlib.sha256(canonical.encode("utf-8")).hexdigest())
+
+
+def _record_body(c: RecordEnrollment) -> dict:
+    """The record step's body in the contract's names; ids and enums as their text, absent as null."""
+    fields = {
+        "studentId": c.student_id,
+        "sectionId": c.section_id,
+        "sagaId": c.saga_id,
+        "origin": c.origin,
+        "outcome": c.outcome,
+        "reservationId": c.reservation_id,
+        "confirmationId": c.confirmation_id,
+        "rejectionReason": c.rejection_reason,
+    }
+    return {name: None if value is None else str(value) for name, value in fields.items()}
+
+
+def _replay[T](find: Callable[[str, str], Keyed[T] | None], key: IdempotencyKey) -> Created[T] | None:
+    """The caller's own earlier resource for this key, if any; another body with it is refused. A key
+    recorded before the fingerprint existed (request_hash None) is matched by its owner only."""
+    found = find(key.owner, key.value)
+    if found is None:
+        return None
+    if found.request_hash is not None and found.request_hash != key.request_hash:
+        raise IdempotencyKeyReused()
+    return Created(found.item, created=False)
+
+
+def _replayed[T](find: Callable[[str, str], Keyed[T] | None], key: IdempotencyKey) -> Created[T]:
+    """After KeyTaken: the concurrent first attempt recorded the key, so it is there now."""
+    replay = _replay(find, key)
+    if replay is None:
+        raise KeyTaken()
+    return replay
 
 
 def _page_details(page: int, limit: int) -> list[FieldError]:
