@@ -16,6 +16,7 @@ from enrollment.adapter.inbound.http import (  # noqa: F401 - the route modules 
 from enrollment.adapter.inbound.http.auth import TokenVerifier
 from enrollment.adapter.inbound.http.router import router
 from enrollment.application.port.inbound.enrollment import EnrollmentUseCases
+from enrollment.application.usecase.readiness import CheckReadiness
 
 SERVICE = "qone-enrollment-api"
 VERSION = "2.0.0"
@@ -23,10 +24,11 @@ CORRELATION_HEADER = "X-Correlation-Id"
 access = logging.getLogger("enrollment.access")
 
 
-def create_app(use_cases: EnrollmentUseCases, verifier: TokenVerifier) -> FastAPI:
+def create_app(use_cases: EnrollmentUseCases, verifier: TokenVerifier, readiness: CheckReadiness) -> FastAPI:
     app = FastAPI(title=SERVICE, version=VERSION, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.use_cases = use_cases
     app.state.verifier = verifier
+    app.state.readiness = readiness
     app.state.service = SERVICE
     app.state.version = VERSION
 

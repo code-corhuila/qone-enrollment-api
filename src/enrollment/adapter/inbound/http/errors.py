@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from enrollment.adapter.inbound.http.auth import AuthError
-from enrollment.application.errors import Forbidden, NotFound
+from enrollment.application.errors import DependencyUnavailable, Forbidden, NotFound
 from enrollment.domain.model.errors import BusinessRuleViolation, FieldError, InvalidStatusTransition, ValidationError
 
 log = logging.getLogger("enrollment.http")
@@ -57,6 +57,11 @@ def install(app: FastAPI) -> None:
     @app.exception_handler(InvalidStatusTransition)
     async def _transition(request: Request, error: InvalidStatusTransition):
         return envelope(request, 422, "INVALID_STATUS_TRANSITION", error.message)
+
+    @app.exception_handler(DependencyUnavailable)
+    async def _unavailable(request: Request, error: DependencyUnavailable):
+        log.warning("not ready: %s (%s)", error.message, error.__cause__, extra={"traceId": trace_id(request)})
+        return envelope(request, 503, "SERVICE_UNAVAILABLE", error.message)
 
     @app.exception_handler(StarletteHTTPException)
     async def _http(request: Request, error: StarletteHTTPException):
