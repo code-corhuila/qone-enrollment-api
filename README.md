@@ -69,6 +69,13 @@ a database that does not answer gives 503 with the common envelope (`SERVICE_UNA
 Both are public. Over the in-memory store the ready probe always answers ok. The projection
 consumer (`apps/consumer`) serves no HTTP and has no probe.
 
+Metrics (HU-OBS-001): `GET /metrics` at the root of the container (outside `/api/v1`, never
+routed by the gateway) answers the Prometheus text format with
+`http_server_requests_total{service,method,route,status_class}` and
+`http_server_request_duration_seconds{service,method,route}`; `route` is the matched route
+template (`unmatched` otherwise) and the scrape itself is not counted. The projection consumer
+(`apps/consumer`) serves no HTTP and publishes no metrics.
+
 ## Branching
 
 Three permanent branches. **None of them accepts a direct commit** — you enter through a child
