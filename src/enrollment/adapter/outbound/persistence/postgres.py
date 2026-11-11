@@ -1,7 +1,8 @@
 """The stores over PostgreSQL (schema `enrollment` of qone-enrollment-db) with psycopg 3 and a
-pool. Every creation writes the row, its Idempotency-Key and its event in ONE transaction and
-returns the first row when the key was used (norm 5.3.8); the partial unique index of
-INV-ENR-001 surfaces as DuplicateActive. The projections are read here and kept by consumers."""
+pool. Every creation writes the row, its Idempotency-Key and its event in ONE transaction (norm
+5.3.8); the key is scoped to its owner, PRIMARY KEY (owner_id, key) since V018, and a key the
+owner already used surfaces as KeyTaken; the partial unique index of INV-ENR-001 surfaces as
+DuplicateActive. The projections are read here and kept by consumers."""
 
 import threading
 from concurrent.futures import Future
@@ -13,7 +14,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
-from enrollment.application.port.outbound.ports import DuplicateActive
+from enrollment.application.port.outbound.ports import DuplicateActive, IdempotencyKey, Keyed, KeyTaken
 from enrollment.domain.model.certificate import Certificate, CertificateType
 from enrollment.domain.model.eligibility import SectionView
 from enrollment.domain.model.enrollment import Enrollment, EnrollmentStatus, Origin, RejectionReason
@@ -42,25 +43,24 @@ def connect(
     )
 
 
-class _KeyAlreadyUsed(Exception):
-    pass
-
-
-def _claim_key(conn, key: str, resource_type: str, resource_id: UUID) -> None:
+def _claim_key(conn, key: IdempotencyKey, resource_type: str, resource_id: UUID) -> None:
+    """Raises KeyTaken (rolling the transaction back) when the owner already used the key."""
     taken = conn.execute(
-        "INSERT INTO enrollment.idempotency_key (key, resource_type, resource_id) VALUES (%s, %s, %s) "
-        "ON CONFLICT (key) DO NOTHING RETURNING key",
-        (key, resource_type, resource_id),
+        "INSERT INTO enrollment.idempotency_key (owner_id, key, request_hash, resource_type, resource_id) "
+        "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (owner_id, key) DO NOTHING RETURNING key",
+        (key.owner, key.value, key.request_hash, resource_type, resource_id),
     ).fetchone()
     if taken is None:
-        raise _KeyAlreadyUsed()
+        raise KeyTaken()
 
 
-def _resource_of(conn, key: str, resource_type: str) -> UUID | None:
+def _resource_of(conn, owner: str, key: str, resource_type: str) -> tuple[UUID, str | None] | None:
     row = conn.execute(
-        "SELECT resource_id FROM enrollment.idempotency_key WHERE key = %s AND resource_type = %s", (key, resource_type)
+        "SELECT resource_id, request_hash FROM enrollment.idempotency_key "
+        "WHERE owner_id = %s AND key = %s AND resource_type = %s",
+        (owner, key, resource_type),
     ).fetchone()
-    return row["resource_id"] if row else None
+    return (row["resource_id"], row["request_hash"]) if row else None
 
 
 def _write_event(conn, event: DomainEvent) -> None:
@@ -185,10 +185,11 @@ class PostgresEnrollmentStore:
     def __init__(self, pool: ConnectionPool) -> None:
         self._pool = pool
 
-    def find_by_key(self, idempotency_key: str) -> Enrollment | None:
+    def find_by_key(self, owner: str, idempotency_key: str) -> Keyed[Enrollment] | None:
         with self._pool.connection() as conn:
-            enrollment_id = _resource_of(conn, idempotency_key, "enrollment")
-            return self._one(conn, enrollment_id) if enrollment_id else None
+            recorded = _resource_of(conn, owner, idempotency_key, "enrollment")
+            enrollment = self._one(conn, recorded[0]) if recorded else None
+        return Keyed(enrollment, recorded[1]) if recorded and enrollment else None
 
     def find(self, enrollment_id: UUID) -> Enrollment | None:
         with self._pool.connection() as conn:
@@ -222,34 +223,28 @@ class PostgresEnrollmentStore:
         rows = self._many(f"{where} ORDER BY student_name LIMIT %s OFFSET %s", (section_id, limit, (page - 1) * limit))
         return rows, int(total)
 
-    def create(self, enrollment: Enrollment, idempotency_key: str, event: DomainEvent) -> tuple[Enrollment, bool]:
-        try:
-            with self._pool.connection() as conn, conn.transaction():
-                # The key first: a retry of the same intention returns the first row instead of
-                # tripping over the index of INV-ENR-001 that its own first attempt filled.
-                _claim_key(conn, idempotency_key, "enrollment", enrollment.id)
-                try:
-                    conn.execute(
-                        f"INSERT INTO enrollment.enrollment ({ENROLLMENT_COLUMNS}) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                        _values(enrollment),
-                    )
-                except psycopg.errors.UniqueViolation as cause:
-                    if cause.diag.constraint_name == "ux_enrollment_active":
-                        raise DuplicateActive() from cause
-                    raise
-                for slot in enrollment.slots:
-                    conn.execute(
-                        "INSERT INTO enrollment.enrollment_slot (enrollment_id, day, start_time, end_time) VALUES "
-                        "(%s, %s, %s, %s)",
-                        (enrollment.id, slot.day.value, slot.start, slot.end),
-                    )
-                _write_event(conn, event)
-        except _KeyAlreadyUsed:
-            earlier = self.find_by_key(idempotency_key)
-            assert earlier is not None
-            return earlier, False
-        return enrollment, True
+    def create(self, enrollment: Enrollment, key: IdempotencyKey, event: DomainEvent) -> None:
+        with self._pool.connection() as conn, conn.transaction():
+            # The key first: a retry of the same intention finds its first row (KeyTaken) instead
+            # of tripping over the index of INV-ENR-001 that its own first attempt filled.
+            _claim_key(conn, key, "enrollment", enrollment.id)
+            try:
+                conn.execute(
+                    f"INSERT INTO enrollment.enrollment ({ENROLLMENT_COLUMNS}) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    _values(enrollment),
+                )
+            except psycopg.errors.UniqueViolation as cause:
+                if cause.diag.constraint_name == "ux_enrollment_active":
+                    raise DuplicateActive() from cause
+                raise
+            for slot in enrollment.slots:
+                conn.execute(
+                    "INSERT INTO enrollment.enrollment_slot (enrollment_id, day, start_time, end_time) VALUES "
+                    "(%s, %s, %s, %s)",
+                    (enrollment.id, slot.day.value, slot.start, slot.end),
+                )
+            _write_event(conn, event)
 
     def save_cancelled(self, enrollment: Enrollment, event: DomainEvent) -> None:
         with self._pool.connection() as conn, conn.transaction():
@@ -321,10 +316,11 @@ class PostgresCertificateStore:
     def __init__(self, pool: ConnectionPool) -> None:
         self._pool = pool
 
-    def find_by_key(self, idempotency_key: str) -> Certificate | None:
+    def find_by_key(self, owner: str, idempotency_key: str) -> Keyed[Certificate] | None:
         with self._pool.connection() as conn:
-            certificate_id = _resource_of(conn, idempotency_key, "certificate")
-        return self.find(certificate_id) if certificate_id else None
+            recorded = _resource_of(conn, owner, idempotency_key, "certificate")
+        certificate = self.find(recorded[0]) if recorded else None
+        return Keyed(certificate, recorded[1]) if recorded and certificate else None
 
     def find(self, certificate_id: UUID) -> Certificate | None:
         return self._one("WHERE id = %s", (certificate_id,))
@@ -344,24 +340,16 @@ class PostgresCertificateStore:
             ).fetchall()
         return [_certificate(r) for r in rows], int(total)
 
-    def create(
-        self, certificate: Certificate, document: bytes, idempotency_key: str, event: DomainEvent
-    ) -> tuple[Certificate, bool]:
+    def create(self, certificate: Certificate, document: bytes, key: IdempotencyKey, event: DomainEvent) -> None:
         c = certificate
-        try:
-            with self._pool.connection() as conn, conn.transaction():
-                conn.execute(
-                    f"INSERT INTO enrollment.certificate ({CERTIFICATE_COLUMNS}, document) VALUES (%s, %s, %s, %s, %s, "
-                    "%s, %s, %s)",
-                    (c.id, c.student_id, c.student_name, c.type.value, c.code, c.term, c.issued_at, document),
-                )
-                _claim_key(conn, idempotency_key, "certificate", c.id)
-                _write_event(conn, event)
-        except _KeyAlreadyUsed:
-            earlier = self.find_by_key(idempotency_key)
-            assert earlier is not None
-            return earlier, False
-        return certificate, True
+        with self._pool.connection() as conn, conn.transaction():
+            conn.execute(
+                f"INSERT INTO enrollment.certificate ({CERTIFICATE_COLUMNS}, document) VALUES (%s, %s, %s, %s, %s, "
+                "%s, %s, %s)",
+                (c.id, c.student_id, c.student_name, c.type.value, c.code, c.term, c.issued_at, document),
+            )
+            _claim_key(conn, key, "certificate", c.id)
+            _write_event(conn, event)
 
     def document_of(self, certificate_id: UUID) -> bytes | None:
         with self._pool.connection() as conn:

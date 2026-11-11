@@ -1,4 +1,4 @@
-"""Errors of the application layer; the HTTP adapter translates them (403, 404, 503) in one place."""
+"""Errors of the application layer; the HTTP adapter translates them (403, 404, 422, 503) in one place."""
 
 
 class Forbidden(Exception):
@@ -9,6 +9,14 @@ class Forbidden(Exception):
 
 class NotFound(Exception):
     def __init__(self, message: str = "resource not found") -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class IdempotencyKeyReused(Exception):
+    """The same owner sent an Idempotency-Key it already used with another request body (422)."""
+
+    def __init__(self, message: str = "this Idempotency-Key was already used with another request body") -> None:
         super().__init__(message)
         self.message = message
 

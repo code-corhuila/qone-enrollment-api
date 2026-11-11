@@ -73,7 +73,7 @@ def test_a_section_event_keeps_its_professor():
         "term": "2026-B",
         "groupNumber": 9,
         "professorId": str(ana),
-        "professorName": "Ana Torres",
+        "professorName": "Profesor Demo 02",
         "slots": [{"day": "SAT", "start": "08:00", "end": "10:00"}],
         "seatsAvailable": 30,
     }

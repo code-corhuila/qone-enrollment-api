@@ -1,10 +1,10 @@
 """Core level (Annex C): the use cases over the in-memory adapter and fakes of the ports."""
 
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import pytest
 
-from enrollment.application.errors import Forbidden, NotFound
+from enrollment.application.errors import Forbidden, IdempotencyKeyReused, NotFound
 from enrollment.application.port.inbound.caller import Caller, Role
 from enrollment.application.port.inbound.enrollment import RecordEnrollment
 from enrollment.application.usecase.enrollment import EnrollmentService
@@ -55,8 +55,10 @@ def world():
 
 
 def confirm(service, student=LAURA, section=ISW_604_G1, key="saga-1:confirm-enrollment"):
+    """The saga's record step; a retry of the same step (same key) carries the same body."""
+    saga_id, reservation_id = uuid5(NAMESPACE_URL, f"saga:{key}"), uuid5(NAMESPACE_URL, f"reservation:{key}")
     command = RecordEnrollment(
-        student, section.section_id, uuid4(), Origin.UI, EnrollmentStatus.CONFIRMED, reservation_id=uuid4()
+        student, section.section_id, saga_id, Origin.UI, EnrollmentStatus.CONFIRMED, reservation_id=reservation_id
     )
     return service.record(saga, command, key)
 
@@ -240,3 +242,43 @@ class TestCertificates:
         assert service.issue_certificate(santiago, CertificateType.ESTUDIOS, "cert-key-0004").created
         with pytest.raises(Forbidden):
             service.issue_certificate(admin, CertificateType.ESTUDIOS, "cert-key-0005")
+
+
+class TestIdempotencyKeyOwner:
+    """F1 (qone-docs#55): an Idempotency-Key belongs to whoever sent it; a replay never answers
+    with another person's resource, and the same owner and key with another body is refused."""
+
+    def test_the_same_key_from_another_student_issues_his_own_certificate(self, world):
+        store, renderer, service = world
+        lauras = service.issue_certificate(laura, CertificateType.ESTUDIOS, "shared-key-0001").item
+        his = service.issue_certificate(santiago, CertificateType.ESTUDIOS, "shared-key-0001")
+        assert his.created and his.item.id != lauras.id and his.item.student_id == SANTIAGO
+        assert len(renderer.rendered) == 2 and len(store.outbox) == 2
+        replay = service.issue_certificate(laura, CertificateType.ESTUDIOS, "shared-key-0001")
+        assert replay.created is False and replay.item == lauras
+
+    def test_the_same_owner_and_key_with_another_body_is_refused(self, world):
+        store, renderer, service = world
+        service.issue_certificate(laura, CertificateType.ESTUDIOS, "cert-key-0006")
+        with pytest.raises(IdempotencyKeyReused):
+            service.issue_certificate(laura, CertificateType.MATRICULA, "cert-key-0006")
+        assert len(renderer.rendered) == 1 and len(store.certificates) == 1
+        confirm(service, key="saga-7:confirm-enrollment")
+        with pytest.raises(IdempotencyKeyReused):
+            confirm(service, student=MARIA, key="saga-7:confirm-enrollment")
+
+    def test_a_saga_key_is_scoped_to_the_service_that_sent_it(self, world):
+        store, _, service = world
+        first = confirm(service, key="saga-8:confirm-enrollment").item
+        other = Caller(None, Role.SERVICE, "qone-advisor-api", "qone-advisor-api")
+        command = RecordEnrollment(
+            SANTIAGO,
+            ISW_604_G2.section_id,
+            uuid4(),
+            Origin.UI,
+            EnrollmentStatus.REJECTED,
+            rejection_reason=RejectionReason.TUITION_UNPAID,
+        )
+        theirs = service.record(other, command, "saga-8:confirm-enrollment")
+        assert theirs.created and theirs.item.id != first.id and theirs.item.student_id == SANTIAGO
+        assert len(store.outbox) == 2
