@@ -3,6 +3,8 @@ pool. Every creation writes the row, its Idempotency-Key and its event in ONE tr
 returns the first row when the key was used (norm 5.3.8); the partial unique index of
 INV-ENR-001 surfaces as DuplicateActive. The projections are read here and kept by consumers."""
 
+import threading
+from concurrent.futures import Future
 from datetime import UTC, time
 from uuid import UUID
 
@@ -386,15 +388,35 @@ def _certificate(row: dict) -> Certificate:
 
 
 class PostgresProbe:
-    """`SELECT 1` through the pool with a short wait for a connection (HU-PLT-004): a database that
-    does not answer makes the service not ready instead of hanging the probe."""
+    """`SELECT 1` through the pool within a short deadline (HU-PLT-004): a database that does not
+    answer makes the service not ready instead of hanging the probe. The pool bounds the wait for a
+    connection, but a query on a pooled connection whose engine stopped answering (paused,
+    partitioned) would block until TCP gives up; so the check runs on a daemon thread and the probe
+    waits for it at most `timeout_seconds`. The next probes share a check still pending instead of
+    starting another one: at most one thread is ever stuck."""
 
     name = "database"
 
     def __init__(self, pool: ConnectionPool, timeout_seconds: float = 2.0) -> None:
         self._pool = pool
         self._timeout = timeout_seconds
+        self._lock = threading.Lock()
+        self._pending: Future | None = None
 
     def ping(self) -> None:
-        with self._pool.connection(timeout=self._timeout) as conn:
-            conn.execute("SELECT 1")
+        with self._lock:
+            if self._pending is None or self._pending.done():
+                self._pending = Future()
+                check = threading.Thread(target=self._select_one, args=(self._pending,), name="probe", daemon=True)
+                check.start()
+            pending = self._pending
+        pending.result(timeout=self._timeout)  # TimeoutError when the engine does not answer in time
+
+    def _select_one(self, outcome: Future) -> None:
+        try:
+            with self._pool.connection(timeout=self._timeout) as conn:
+                conn.execute("SELECT 1")
+        except Exception as error:  # noqa: BLE001 - handed to the waiting probe as is
+            outcome.set_exception(error)
+        else:
+            outcome.set_result(None)

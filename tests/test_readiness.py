@@ -2,7 +2,9 @@
 answers 200 with the checks, and 503 with the common envelope when the database does not answer
 while `/health` (liveness) stays 200; the PostgreSQL probe fails fast on an unreachable engine."""
 
+import threading
 import time
+from contextlib import contextmanager
 
 import psycopg
 import pytest
@@ -75,7 +77,7 @@ class TestPostgresProbe:
         pool = connect(UNREACHABLE, max_size=1, wait_seconds=0.5)
         try:
             started = time.perf_counter()
-            with pytest.raises((PoolTimeout, psycopg.OperationalError)):
+            with pytest.raises((PoolTimeout, psycopg.OperationalError, TimeoutError)):
                 PostgresProbe(pool, timeout_seconds=0.5).ping()
             assert time.perf_counter() - started < 3
         finally:
@@ -91,3 +93,46 @@ class TestPostgresProbe:
             assert r.status_code == 503 and r.json()["error"] == "SERVICE_UNAVAILABLE"
         finally:
             pool.close(timeout=1)
+
+
+class _HangingPool:
+    """A pool whose connection never answers the query until released: a paused database, whose
+    kernel still accepts the bytes while the engine never replies."""
+
+    def __init__(self) -> None:
+        self.release = threading.Event()
+        self.queries = 0
+
+    @contextmanager
+    def connection(self, timeout: float | None = None):
+        yield self
+
+    def execute(self, query: str) -> None:
+        self.queries += 1
+        self.release.wait(10)
+
+
+class TestPostgresProbeDeadline:
+    def test_a_query_that_never_answers_fails_within_the_timeout(self):
+        from enrollment.adapter.outbound.persistence.postgres import PostgresProbe
+
+        pool = _HangingPool()
+        probe = PostgresProbe(pool, timeout_seconds=0.3)
+        try:
+            started = time.perf_counter()
+            with pytest.raises(TimeoutError):
+                probe.ping()
+            with pytest.raises(TimeoutError):
+                probe.ping()  # the check still pending is shared, not started again
+            assert time.perf_counter() - started < 2
+            assert pool.queries == 1
+        finally:
+            pool.release.set()
+
+    def test_a_query_that_answers_is_ready(self):
+        from enrollment.adapter.outbound.persistence.postgres import PostgresProbe
+
+        pool = _HangingPool()
+        pool.release.set()
+        PostgresProbe(pool, timeout_seconds=0.3).ping()
+        assert pool.queries == 1

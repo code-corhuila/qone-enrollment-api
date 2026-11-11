@@ -63,8 +63,8 @@ Every log line is JSON with the `traceId`. `scripts/sync-contracts.sh [ref]` ref
 contract copies in `contracts/openapi/`.
 
 Health (HU-PLT-004): `GET /api/v1/enrollment/health` is liveness (the process answers) and
-`GET /api/v1/enrollment/health/ready` is readiness: `SELECT 1` through the pool, waiting at most
-2 s for a connection, answers 200 `{"status":"ready","service":...,"checks":{"database":"ok"}}`;
+`GET /api/v1/enrollment/health/ready` is readiness: `SELECT 1` through the pool within a 2 s
+deadline (a hung query included) answers 200 `{"status":"ready","service":...,"checks":{"database":"ok"}}`;
 a database that does not answer gives 503 with the common envelope (`SERVICE_UNAVAILABLE`).
 Both are public. Over the in-memory store the ready probe always answers ok. The projection
 consumer (`apps/consumer`) serves no HTTP and has no probe.

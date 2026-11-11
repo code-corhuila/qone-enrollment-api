@@ -20,7 +20,7 @@ DB_WAIT_SECONDS = 5.0
 DB_STATEMENT_TIMEOUT_MS = 5000
 HTTP_KEEP_ALIVE_SECONDS = 60
 HTTP_GRACEFUL_SHUTDOWN_SECONDS = 20
-READY_TIMEOUT_SECONDS = 2.0  # the ready probe waits this long for a connection
+READY_TIMEOUT_SECONDS = 2.0  # deadline of the ready probe (connection and SELECT 1)
 
 
 class Settings:
