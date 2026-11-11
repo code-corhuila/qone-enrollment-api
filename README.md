@@ -66,11 +66,25 @@ and smoke-checks the image. `deploy/compose.yml` is what `qone-infra` includes: 
 after `enrollment-db` is healthy.
 
 Explicit limits (norm 5.3.10), declared in `apps/api/factory.py`: pool 10 connections with a
-5 s wait, statement timeout 5 s, keep-alive 60 s, graceful shutdown 20 s; the header read
-timeout is imposed by the gateway. `CURRENT_TERM` and `DEFAULT_PROGRAM`
+5 s wait, statement timeout 5 s, keep-alive 60 s, graceful shutdown 20 s, ready probe 2 s; the
+header read timeout is imposed by the gateway. `CURRENT_TERM` and `DEFAULT_PROGRAM`
 (the program of a record created on first access) come from the environment.
 Every log line is JSON with the `traceId`. `scripts/sync-contracts.sh [ref]` refreshes the
 contract copies in `contracts/openapi/`.
+
+Health (HU-PLT-004): `GET /api/v1/enrollment/health` is liveness (the process answers) and
+`GET /api/v1/enrollment/health/ready` is readiness: `SELECT 1` through the pool within a 2 s
+deadline (a hung query included) answers 200 `{"status":"ready","service":...,"checks":{"database":"ok"}}`;
+a database that does not answer gives 503 with the common envelope (`SERVICE_UNAVAILABLE`).
+Both are public. Over the in-memory store the ready probe always answers ok. The projection
+consumer (`apps/consumer`) serves no HTTP and has no probe.
+
+Metrics (HU-OBS-001): `GET /metrics` at the root of the container (outside `/api/v1`, never
+routed by the gateway) answers the Prometheus text format with
+`http_server_requests_total{service,method,route,status_class}` and
+`http_server_request_duration_seconds{service,method,route}`; `route` is the matched route
+template (`unmatched` otherwise) and the scrape itself is not counted. The projection consumer
+(`apps/consumer`) serves no HTTP and publishes no metrics.
 
 ## Branching
 

@@ -146,3 +146,9 @@ def test_a_certificate_keeps_its_document_and_is_found_by_code(stores):
     retry = issue(uuid4(), LAURA, "Laura Gómez", CertificateType.ESTUDIOS, "2026-B", NOW)
     assert certificates.create(retry, b"other", "it-cert-key-1", certificate_issued(retry)) == (stored, False)
     assert certificates.page_of(LAURA, 1, 20) == ([c], 1)
+
+
+def test_the_ready_probe_answers_against_the_real_engine(pool):
+    from enrollment.adapter.outbound.persistence.postgres import PostgresProbe
+
+    PostgresProbe(pool, timeout_seconds=2.0).ping()

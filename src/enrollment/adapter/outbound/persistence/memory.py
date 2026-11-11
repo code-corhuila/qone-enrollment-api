@@ -166,3 +166,12 @@ class _CertificatePort:
     def __init__(self, s: InMemoryEnrollment) -> None:
         self.find_by_key, self.find, self.find_by_code = s.find_certificate_by_key, s.find_certificate, s.find_by_code
         self.page_of, self.create, self.document_of = s.certificate_page, s.create_certificate, s.document_of
+
+
+class InMemoryProbe:
+    """The ready probe of a service without a database: the in-memory store is always there."""
+
+    name = "database"
+
+    def ping(self) -> None:
+        return None
