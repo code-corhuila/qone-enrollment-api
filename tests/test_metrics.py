@@ -96,3 +96,10 @@ def test_an_unhandled_error_is_counted_as_5xx(client):
     assert client.get(f"{BASE}/boom").status_code == 500
     samples = scrape(client)
     assert value(samples, "http_server_requests_total", route=f"{BASE}/boom", status_class="5xx") == 1
+
+
+def test_a_non_standard_method_is_counted_as_other(client):
+    client.request("PURGE", f"{BASE}/health")
+    samples = scrape(client)
+    assert value(samples, "http_server_requests_total", method="OTHER") == 1
+    assert 'method="PURGE"' not in client.get("/metrics").text

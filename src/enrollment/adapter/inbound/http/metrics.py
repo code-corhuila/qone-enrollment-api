@@ -10,6 +10,8 @@ from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, H
 
 METRICS_PATH = "/metrics"
 UNMATCHED = "unmatched"
+METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
+OTHER_METHOD = "OTHER"
 BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 10)
 
 
@@ -46,6 +48,12 @@ def route_of(request: Request) -> str:
     return getattr(route, "path", None) or UNMATCHED
 
 
+def method_of(request: Request) -> str:
+    """The HTTP method, or `OTHER` for a non-standard one: the client chooses the method freely, so
+    the label would otherwise be unbounded too."""
+    return request.method if request.method in METHODS else OTHER_METHOD
+
+
 def install(app: FastAPI, service: str) -> HttpMetrics:
     """Adds the measuring middleware (outermost, so it sees the final status, the 500 included)
     and the scrape route."""
@@ -58,7 +66,7 @@ def install(app: FastAPI, service: str) -> HttpMetrics:
             return await call_next(request)
         started = time.perf_counter()
         response = await call_next(request)
-        metrics.observe(request.method, route_of(request), response.status_code, time.perf_counter() - started)
+        metrics.observe(method_of(request), route_of(request), response.status_code, time.perf_counter() - started)
         return response
 
     @app.get(METRICS_PATH, include_in_schema=False)
