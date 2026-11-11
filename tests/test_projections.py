@@ -48,3 +48,23 @@ def test_a_repeated_delivery_changes_nothing_and_unknown_types_are_ignored():
     paid = event("TuitionPaid", {"studentId": "u", "term": "2026-B"})
     assert project.handle(paid, "corr") == "applied" and project.handle(paid, "corr") == "duplicate"
     assert project.handle(event("PlanProposed", {}), "corr") == "ignored" and len(store.changes) == 1
+
+
+def test_a_section_keeps_its_professor():
+    created = {
+        "sectionId": "s",
+        "subjectId": "i",
+        "subjectCode": "ISW-604",
+        "subjectName": "Sistemas Distribuidos",
+        "term": "2026-B",
+        "groupNumber": 4,
+        "professorId": "22222222-2222-4222-8222-222222222222",
+        "professorName": "Ana Torres",
+        "capacity": 30,
+        "seatsAvailable": 30,
+        "slots": [],
+    }
+    kind, change = change_of(event("SectionCreated", created))
+    assert kind == "section" and change["professorId"] == "22222222-2222-4222-8222-222222222222"
+    older = {k: v for k, v in created.items() if k != "professorId"}
+    assert change_of(event("SectionCreated", older))[1]["professorId"] is None, "no professor: nobody's roster"

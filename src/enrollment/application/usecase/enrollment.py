@@ -1,7 +1,8 @@
 """The operations of the enrollment service (EN-02..EN-14) over the ports. Authorization by role
 and ownership (07-api/authentication.md access matrix): the `/me` reads, the certificates and
 their documents are STUDENT only; one enrollment for its owner, PROFESSOR, ADMIN or SERVICE
-(another student gets 403); the roster for PROFESSOR or ADMIN; the saga steps for the SERVICE
+(another student gets 403); the roster for ADMIN, or for the PROFESSOR of that very section
+(another professor gets 404, D-03; qone-docs#48); the saga steps for the SERVICE
 token only (D-10); the verification of a certificate is public. An Idempotency-Key belongs to
 whoever sent it (qone-docs#55): a replay answers only with the caller's own resource, and the same
 caller and key with another body is refused."""
@@ -169,8 +170,9 @@ class EnrollmentService(EnrollmentUseCases):
     def roster(self, caller: Caller, section_id: UUID, page: int, limit: int) -> Page[RosterItem]:
         _require(caller, Role.PROFESSOR, Role.ADMIN)
         _raise_if(_page_details(page, limit))
-        if self._projections.section(section_id) is None:
-            raise NotFound("section not found")
+        section = self._projections.section(section_id)
+        if section is None or (caller.role is Role.PROFESSOR and not section.taught_by(caller.user_id)):
+            raise NotFound("section not found")  # D-03: another professor's roster does not exist for this caller
         rows, total = self._enrollments.roster(section_id, page, limit)
         return Page([RosterItem(e.id, e.student_id, e.student_name, e.created_at) for e in rows], page, limit, total)
 
