@@ -10,7 +10,9 @@ from fastapi.testclient import TestClient
 
 from enrollment.adapter.inbound.http.app import create_app
 from enrollment.adapter.inbound.http.auth import TokenVerifier
+from enrollment.adapter.outbound.persistence.memory import InMemoryProbe
 from enrollment.application.usecase.enrollment import EnrollmentService
+from enrollment.application.usecase.readiness import CheckReadiness
 from tests.fakes import FakeRenderer, FixedClock, SequenceIds, seeded_store
 
 
@@ -52,7 +54,7 @@ def bearer(sub: str, role: str, name: str = "", **kw) -> dict[str, str]:
     return {"Authorization": f"Bearer {mint(sub, role, name, **kw)}"}
 
 
-def make_client():
+def make_client(readiness: CheckReadiness | None = None):
     store = seeded_store()
     records, projections, enrollments, certificates = store.as_ports()
     service = EnrollmentService(
@@ -66,4 +68,6 @@ def make_client():
         "2026-B",
         "Ingeniería de Software",
     )
-    return TestClient(create_app(service, TokenVerifier(PUBLIC_PEM)), raise_server_exceptions=False), store
+    readiness = readiness or CheckReadiness([InMemoryProbe()])
+    app = create_app(service, TokenVerifier(PUBLIC_PEM), readiness)
+    return TestClient(app, raise_server_exceptions=False), store

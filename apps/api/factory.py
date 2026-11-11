@@ -9,9 +9,10 @@ import sys
 from enrollment.adapter.inbound.http.app import create_app
 from enrollment.adapter.inbound.http.auth import TokenVerifier
 from enrollment.adapter.outbound.document.pdf import PdfRenderer
-from enrollment.adapter.outbound.persistence.memory import InMemoryEnrollment
+from enrollment.adapter.outbound.persistence.memory import InMemoryEnrollment, InMemoryProbe
 from enrollment.adapter.outbound.runtime import SystemClock, Uuid4Generator
 from enrollment.application.usecase.enrollment import EnrollmentService
+from enrollment.application.usecase.readiness import CheckReadiness
 
 # Explicit limits (norm 5.3.10, Annex C), declared here with their values.
 DB_POOL_MAX = 10
@@ -19,6 +20,7 @@ DB_WAIT_SECONDS = 5.0
 DB_STATEMENT_TIMEOUT_MS = 5000
 HTTP_KEEP_ALIVE_SECONDS = 60
 HTTP_GRACEFUL_SHUTDOWN_SECONDS = 20
+READY_TIMEOUT_SECONDS = 2.0  # the ready probe waits this long for a connection
 
 
 class Settings:
@@ -52,6 +54,7 @@ def build_app(settings: Settings | None = None):
         from enrollment.adapter.outbound.persistence.postgres import (
             PostgresCertificateStore,
             PostgresEnrollmentStore,
+            PostgresProbe,
             PostgresProjections,
             PostgresRecordStore,
             connect,
@@ -64,14 +67,15 @@ def build_app(settings: Settings | None = None):
             PostgresEnrollmentStore(pool),
             PostgresCertificateStore(pool),
         )
+        probe = PostgresProbe(pool, READY_TIMEOUT_SECONDS)
         log.info("store: postgresql (pool max %s, statement timeout %s ms)", DB_POOL_MAX, DB_STATEMENT_TIMEOUT_MS)
     else:
-        ports = InMemoryEnrollment().as_ports()
+        ports, probe = InMemoryEnrollment().as_ports(), InMemoryProbe()
         log.warning("store: in memory and empty (ENROLLMENT_DATABASE_URL not set); development only")
     service = EnrollmentService(
         *ports, PdfRenderer(), SystemClock(), Uuid4Generator(), settings.current_term, settings.default_program
     )
-    return create_app(service, TokenVerifier(settings.public_key))
+    return create_app(service, TokenVerifier(settings.public_key), CheckReadiness([probe]))
 
 
 class JsonFormatter(logging.Formatter):
