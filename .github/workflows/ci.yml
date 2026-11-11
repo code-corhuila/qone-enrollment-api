@@ -15,11 +15,24 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -e ".[dev]"
+      - run: python -m pip install --upgrade pip && pip install -e ".[dev]"
       - name: Lint (ruff)
         run: ruff check .
-      - name: Domain, use-case, HTTP, contract and architecture tests
-        run: python -m pytest
+      - name: Domain, use-case, HTTP, contract and architecture tests with the coverage floor of the README
+        run: python -m pytest --cov=src --cov-report=term --cov-fail-under=75
+      - name: Dependency audit (pip-audit)
+        run: pip install pip-audit && pip-audit --skip-editable
+
+  secrets:
+    # gitleaks over the whole history (HU-PLT-005): the job fails if a secret was ever committed.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Secret scan (gitleaks)
+        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 detect --source /repo --redact --verbose
 
   integration:
     # The real engine with the schema of qone-enrollment-db (Annex C). The schema is cloned from the
